@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Launcher: runs the CLI with the project's mise-pinned Bun, from any directory.
+root="$(dirname "$(dirname "$(readlink -f "$0")")")"
+exec mise exec -C "$root" -- bun "$root/src/cli.ts" "$@"

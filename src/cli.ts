@@ -1,0 +1,143 @@
+#!/usr/bin/env bun
+import { parseArgs } from "node:util";
+import { loadConfig, saveConfig, siteDir, CONFIG_PATH } from "./config.ts";
+import { storePassword, deletePassword } from "./secrets.ts";
+import { WPClient, WPError, discoverApi } from "./wp.ts";
+import { syncSite } from "./sync.ts";
+import { ask, askSecret } from "./prompt.ts";
+
+const HELP = `omawp — sync WordPress posts to local Markdown
+
+Usage:
+  omawp add [name] [--url URL] [--user USERNAME]   Add a site (prompts for an Application Password)
+  omawp sites                                      List configured sites
+  omawp remove <name>                              Remove a site and its stored password
+  omawp sync [site...] [--full] [--force]          Pull posts to Markdown (all sites if none given)
+
+Options:
+  --full    Fetch every post instead of only recently modified ones
+  --force   Overwrite local files even if you've edited them
+
+Config: ${CONFIG_PATH}
+`;
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/^www\./, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function normalizeUrl(input: string): string {
+  const withScheme = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+  const u = new URL(withScheme);
+  return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+}
+
+async function cmdAdd(args: string[], flags: { url?: string; user?: string }) {
+  const config = await loadConfig();
+  const url = normalizeUrl(flags.url || (await ask("Site URL")));
+  if (!url) throw new Error("A site URL is required.");
+  const name = slugify(args[0] || (await ask("Short name", slugify(new URL(url).host))));
+  if (config.sites[name]) throw new Error(`A site named "${name}" already exists. Remove it first.`);
+  if (url.startsWith("http://")) console.warn("⚠ Application Passwords require HTTPS on most sites.");
+
+  process.stdout.write("Finding REST API… ");
+  const api = await discoverApi(url);
+  console.log(api);
+
+  const username = flags.user || (await ask("WordPress username"));
+  console.log(`Create an Application Password at ${url}/wp-admin/profile.php (Application Passwords section).`);
+  const password = await askSecret("Application Password");
+  if (!password) throw new Error("An Application Password is required.");
+
+  process.stdout.write("Checking credentials… ");
+  const me = await new WPClient(api, username, password).me().catch((e) => {
+    if (e instanceof WPError && e.status === 401) throw new Error("Authentication failed — check the username and Application Password.");
+    throw e;
+  });
+  console.log(`ok (${me.name})`);
+
+  await storePassword(name, password);
+  config.sites[name] = { url, api, username };
+  await saveConfig(config);
+  console.log(`Added "${name}". Posts will sync to ${siteDir(config, name)}\nRun: omawp sync ${name}`);
+}
+
+async function cmdSites() {
+  const config = await loadConfig();
+  const names = Object.keys(config.sites);
+  if (names.length === 0) return console.log("No sites yet. Run: omawp add");
+  for (const name of names) {
+    const s = config.sites[name]!;
+    console.log(`${name.padEnd(20)} ${s.url.padEnd(40)} ${s.username}`);
+  }
+}
+
+async function cmdRemove(args: string[]) {
+  const name = args[0];
+  if (!name) throw new Error("Usage: omawp remove <name>");
+  const config = await loadConfig();
+  if (!config.sites[name]) throw new Error(`Unknown site "${name}".`);
+  delete config.sites[name];
+  await saveConfig(config);
+  await deletePassword(name);
+  console.log(`Removed "${name}". Local files in ${siteDir(config, name)} were left in place.`);
+}
+
+async function cmdSync(args: string[], flags: { full?: boolean; force?: boolean }) {
+  const config = await loadConfig();
+  const names = args.length ? args : Object.keys(config.sites);
+  if (names.length === 0) return console.log("No sites yet. Run: omawp add");
+
+  let failed = false;
+  for (const name of names) {
+    console.log(`\n▸ ${name}`);
+    try {
+      const r = await syncSite(config, name, { ...flags, log: (l) => console.log(`  ${l}`) });
+      const renamed = r.renamed ? `, ${r.renamed} renamed` : "";
+      console.log(`  ${r.created.length} new, ${r.updated.length} updated${renamed}, ${r.unchanged} unchanged → ${siteDir(config, name)}`);
+      for (const s of r.skipped) console.log(`  ⚠ skipped ${s.file}: ${s.reason}`);
+      for (const f of r.missingRemote) console.log(`  ⚠ ${f} no longer exists on the site (left in place)`);
+    } catch (e) {
+      failed = true;
+      console.error(`  ✗ ${(e as Error).message}`);
+    }
+  }
+  if (failed) process.exitCode = 1;
+}
+
+async function main() {
+  const { values, positionals } = parseArgs({
+    args: Bun.argv.slice(2),
+    allowPositionals: true,
+    options: {
+      url: { type: "string" },
+      user: { type: "string" },
+      full: { type: "boolean" },
+      force: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  const [command, ...args] = positionals;
+
+  switch (command) {
+    case "add":
+      return cmdAdd(args, values);
+    case "sites":
+    case "list":
+      return cmdSites();
+    case "remove":
+    case "rm":
+      return cmdRemove(args);
+    case "sync":
+    case "pull":
+      // Accept `omawp sync posts` as a synonym for syncing all sites.
+      return cmdSync(args[0] === "posts" ? args.slice(1) : args, values);
+    default:
+      console.log(HELP);
+      if (command && !values.help) process.exitCode = 1;
+  }
+}
+
+main().catch((e) => {
+  console.error(`✗ ${(e as Error).message}`);
+  process.exit(1);
+});
