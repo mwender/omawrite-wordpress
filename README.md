@@ -33,7 +33,7 @@ omawp remove blog
 |---|---|
 | Config | `~/.config/omawp/config.toml` (`contentDir`, `[sites.<name>]` url/api/username) |
 | Passwords | System keyring via `secret-tool` (`service=omawp site=<name>`), or `OMAWP_APP_PASSWORD_<NAME>` |
-| Posts | `~/Documents/WordPress/<site>/posts/YYYY-MM-DD_<slug>.md`; drafts and pending posts are `draft_<title>.md` |
+| Posts | `~/Documents/WordPress/<site>/posts/YYYY/YYYY-MM-DD_<slug>.md`; drafts and pending posts in `posts/drafts/<title>.md` |
 | Sync state | `~/Documents/WordPress/<site>/.omawp/state.json`, original HTML in `.omawp/raw/<id>.html` |
 
 ## Front matter
@@ -61,7 +61,7 @@ complex_blocks: [columns]  # blocks that won't round-trip cleanly through Markdo
 - Files you've edited locally are never overwritten without `--force`.
 - If a post's slug, date, or status changes on the site, the local file is renamed (local edits move with it).
   Drafts are named by title because WordPress changes a draft's date on every save; once published they
-  get their dated name. If a name is taken, the post ID is appended.
+  move to their year folder. If a name is taken, the post ID is appended.
 - If the naming scheme changes between versions, the next sync fetches everything and renames existing files.
 - Posts deleted or trashed on the site are reported on `--full` syncs, never deleted locally.
 

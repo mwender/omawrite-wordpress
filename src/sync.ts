@@ -1,5 +1,5 @@
-import { join } from "node:path";
-import { mkdir, rename } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { mkdir, rename, rmdir } from "node:fs/promises";
 import { type Config, siteDir } from "./config.ts";
 import { getPassword } from "./secrets.ts";
 import { WPClient, type WPPost } from "./wp.ts";
@@ -50,9 +50,9 @@ function incrementalSince(lastModified: string): string {
   return d.toISOString().slice(0, 19);
 }
 
-// Bump when fileNameFor changes; a sync that sees an older layout fetches everything
+// Bump when postPath changes; a sync that sees an older layout fetches everything
 // so every existing file gets renamed.
-const LAYOUT = 2;
+const LAYOUT = 3;
 
 const UNPUBLISHED = new Set(["draft", "pending", "auto-draft"]);
 
@@ -60,13 +60,14 @@ function slugify(s: string): string {
   return s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
 }
 
-// Dated posts: YYYY-MM-DD_slug.md. Drafts: draft_title.md, because WordPress moves a
-// draft's date on every save (until one is set) and drafts often have no slug yet.
-export function fileNameFor(post: WPPost): string {
+// Path under posts/. Dated posts: YYYY/YYYY-MM-DD_slug.md. Drafts: drafts/title.md,
+// because WordPress moves a draft's date on every save (until one is set) and drafts
+// often have no slug yet.
+export function postPath(post: WPPost): string {
   if (UNPUBLISHED.has(post.status)) {
-    return `draft_${slugify(post.title.raw ?? post.title.rendered) || post.slug || post.id}.md`;
+    return join("drafts", `${slugify(post.title.raw ?? post.title.rendered) || post.slug || post.id}.md`);
   }
-  return `${post.date.slice(0, 10)}_${post.slug || post.id}.md`;
+  return join(post.date.slice(0, 4), `${post.date.slice(0, 10)}_${post.slug || post.id}.md`);
 }
 
 export async function syncSite(config: Config, name: string, opts: SyncOptions = {}): Promise<SyncResult> {
@@ -111,7 +112,7 @@ export async function syncSite(config: Config, name: string, opts: SyncOptions =
     const prev = state.posts[id];
 
     // Pick a file name; append the post ID if another post (or a stray file) owns it.
-    let file = join("posts", fileNameFor(post));
+    let file = join("posts", postPath(post));
     const owner = claimed.get(file);
     if ((owner && owner !== id) || (!owner && (await Bun.file(join(root, file)).exists()))) {
       file = file.replace(/\.md$/, `-${post.id}.md`);
@@ -120,7 +121,10 @@ export async function syncSite(config: Config, name: string, opts: SyncOptions =
     // Name changed (new layout, slug, title, or publish date): move the existing file,
     // local edits and all, before deciding whether its contents need updating.
     if (prev && prev.file !== file && (await Bun.file(join(root, prev.file)).exists())) {
+      await mkdir(dirname(join(root, file)), { recursive: true });
       await rename(join(root, prev.file), join(root, file));
+      // Tidy up a year/drafts folder this emptied (fails harmlessly if not empty).
+      if (dirname(prev.file) !== "posts") await rmdir(join(root, dirname(prev.file))).catch(() => {});
       claimed.delete(prev.file);
       claimed.set(file, id);
       prev.file = file;
