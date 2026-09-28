@@ -29,6 +29,19 @@ export interface WPMedia {
   source_url: string;
 }
 
+// Term names come back HTML-encoded ("Tips &amp; Tricks").
+export function decodeEntities(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+const decodeTerm = (t: WPTerm): WPTerm => ({ ...t, name: decodeEntities(t.name) });
+
 export const POST_STATUSES = ["publish", "future", "draft", "pending", "private"];
 
 export class WPError extends Error {
@@ -56,9 +69,19 @@ export class WPClient {
     return u.toString();
   }
 
-  async request<T>(route: string, params: Record<string, string | number> = {}): Promise<{ data: T; res: Response }> {
+  async request<T>(
+    route: string,
+    params: Record<string, string | number> = {},
+    body?: unknown,
+  ): Promise<{ data: T; res: Response }> {
     const res = await fetch(this.url(route, params), {
-      headers: { Authorization: this.auth, Accept: "application/json" },
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: this.auth,
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
       let msg = `${res.status} ${res.statusText}`;
@@ -90,12 +113,24 @@ export class WPClient {
     return this.paginate<WPPost>("wp/v2/posts", { context: "edit", status: POST_STATUSES.join(","), ...params });
   }
 
-  categories() {
-    return this.paginate<WPTerm>("wp/v2/categories", { _fields: "id,name,slug" });
+  post(id: number) {
+    return this.request<WPPost>(`wp/v2/posts/${id}`, { context: "edit" }).then((r) => r.data);
   }
 
-  tags() {
-    return this.paginate<WPTerm>("wp/v2/tags", { _fields: "id,name,slug" });
+  updatePost(id: number, fields: Record<string, unknown>) {
+    return this.request<WPPost>(`wp/v2/posts/${id}`, { context: "edit" }, fields).then((r) => r.data);
+  }
+
+  createTerm(taxonomy: "categories" | "tags", name: string) {
+    return this.request<WPTerm>(`wp/v2/${taxonomy}`, {}, { name }).then((r) => r.data);
+  }
+
+  async categories() {
+    return (await this.paginate<WPTerm>("wp/v2/categories", { _fields: "id,name,slug" })).map(decodeTerm);
+  }
+
+  async tags() {
+    return (await this.paginate<WPTerm>("wp/v2/tags", { _fields: "id,name,slug" })).map(decodeTerm);
   }
 
   async media(ids: number[]): Promise<WPMedia[]> {

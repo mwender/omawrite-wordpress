@@ -2,18 +2,19 @@ import { join, dirname } from "node:path";
 import { mkdir, rename, rmdir } from "node:fs/promises";
 import { type Config, siteDir } from "./config.ts";
 import { getPassword } from "./secrets.ts";
-import { WPClient, type WPPost } from "./wp.ts";
-import { htmlToMarkdown, complexBlocks } from "./convert.ts";
-import { serialize, type FrontMatter } from "./frontmatter.ts";
+import { WPClient, type WPPost, type WPTerm } from "./wp.ts";
+import { htmlToMarkdown, CONVERTER } from "./convert.ts";
+import { serialize, parse, type FrontMatter } from "./frontmatter.ts";
 
-interface PostState {
+export interface PostState {
   file: string; // relative to the site dir
   modified_gmt: string;
   hash: string; // hash of the file as last written by omawp, to detect local edits
 }
 
-interface SiteState {
+export interface SiteState {
   layout?: number; // file naming scheme version (see LAYOUT)
+  converter?: number; // HTML → Markdown converter version (see CONVERTER)
   lastModified?: string; // newest post `modified` (site-local time) seen
   posts: Record<string, PostState>;
 }
@@ -35,11 +36,6 @@ export interface SyncResult {
 
 export function hash(text: string): string {
   return new Bun.CryptoHasher("sha1").update(text).digest("hex");
-}
-
-async function readState(path: string): Promise<SiteState> {
-  const f = Bun.file(path);
-  return (await f.exists()) ? ((await f.json()) as SiteState) : { posts: {} };
 }
 
 // WordPress `modified` is site-local and `modified_after` is compared against it in
@@ -70,27 +66,95 @@ export function postPath(post: WPPost): string {
   return join(post.date.slice(0, 4), `${post.date.slice(0, 10)}_${post.slug || post.id}.md`);
 }
 
-export async function syncSite(config: Config, name: string, opts: SyncOptions = {}): Promise<SyncResult> {
-  const log = opts.log ?? (() => {});
+export interface Site {
+  name: string;
+  root: string;
+  state: SiteState;
+  client: WPClient;
+  save(): Promise<void>;
+}
+
+export async function openSite(config: Config, name: string): Promise<Site> {
   const site = config.sites[name];
   if (!site) throw new Error(`Unknown site "${name}". Run \`omawp sites\` to list configured sites.`);
-
   const root = siteDir(config, name);
-  const metaDir = join(root, ".omawp");
-  const statePath = join(metaDir, "state.json");
+  const statePath = join(root, ".omawp", "state.json");
   await mkdir(join(root, "posts"), { recursive: true });
-  await mkdir(join(metaDir, "raw"), { recursive: true });
+  await mkdir(join(root, ".omawp", "raw"), { recursive: true });
+  const f = Bun.file(statePath);
+  const state: SiteState = (await f.exists()) ? await f.json() : { posts: {} };
+  return {
+    name,
+    root,
+    state,
+    client: new WPClient(site.api, site.username, await getPassword(name)),
+    save: () => Bun.write(statePath, JSON.stringify(state, null, 2) + "\n").then(() => {}),
+  };
+}
 
-  const state = await readState(statePath);
-  const client = new WPClient(site.api, site.username, await getPassword(name));
+export interface Lookups {
+  categories: Map<number, string>;
+  tags: Map<number, string>;
+  media: Map<number, string>;
+}
 
-  const relayout = Object.keys(state.posts).length > 0 && state.layout !== LAYOUT;
-  const incremental = !opts.full && !relayout && state.lastModified;
+export async function fetchLookups(client: WPClient, posts: WPPost[], terms?: { categories: WPTerm[]; tags: WPTerm[] }): Promise<Lookups> {
+  const { categories, tags } = terms ?? { categories: await client.categories(), tags: await client.tags() };
+  const mediaIds = [...new Set(posts.map((p) => p.featured_media).filter((id) => id > 0))];
+  return {
+    categories: new Map(categories.map((t) => [t.id, t.name])),
+    tags: new Map(tags.map((t) => [t.id, t.name])),
+    media: new Map((await client.media(mediaIds)).map((m) => [m.id, m.source_url])),
+  };
+}
+
+export function renderPost(post: WPPost, lookups: Lookups, flatten = false): string {
+  const raw = post.content.raw ?? post.content.rendered;
+  const fm: FrontMatter = {
+    id: post.id,
+    title: post.title.raw ?? post.title.rendered,
+    slug: post.slug,
+    status: post.status,
+    date: post.date,
+    modified_gmt: post.modified_gmt,
+    link: post.link,
+    categories: (post.categories ?? []).map((c) => lookups.categories.get(c) ?? String(c)),
+    tags: (post.tags ?? []).map((t) => lookups.tags.get(t) ?? String(t)),
+    excerpt: (post.excerpt.raw ?? "").trim(),
+    featured_image: lookups.media.get(post.featured_media),
+    sticky: post.sticky || undefined,
+    flatten: flatten || undefined,
+  };
+  return serialize(fm, htmlToMarkdown(raw, { flatten }));
+}
+
+// Posts marked `flatten: true` stay fully Markdown on later pulls.
+export async function isFlattened(path: string): Promise<boolean> {
+  const f = Bun.file(path);
+  return (await f.exists()) && parse(await f.text()).fm.flatten === true;
+}
+
+// Write a pulled post and record it in state. Callers decide whether overwriting is OK.
+export async function writePost(site: Site, post: WPPost, file: string, text: string): Promise<void> {
+  await Bun.write(join(site.root, file), text);
+  await Bun.write(join(site.root, ".omawp", "raw", `${post.id}.html`), post.content.raw ?? post.content.rendered);
+  site.state.posts[String(post.id)] = { file, modified_gmt: post.modified_gmt, hash: hash(text) };
+}
+
+export async function syncSite(config: Config, name: string, opts: SyncOptions = {}): Promise<SyncResult> {
+  const log = opts.log ?? (() => {});
+  const site = await openSite(config, name);
+  const { root, state, client } = site;
+
+  const tracked = Object.keys(state.posts).length > 0;
+  const relayout = tracked && state.layout !== LAYOUT;
+  const reconvert = tracked && state.converter !== CONVERTER;
+  const incremental = !opts.full && !relayout && !reconvert && state.lastModified;
   log(
     incremental
       ? `Fetching posts modified since ${incrementalSince(state.lastModified!)}…`
-      : relayout
-        ? "File naming changed — fetching all posts to rename existing files…"
+      : relayout || reconvert
+        ? "omawp was updated — fetching all posts to refresh existing files…"
         : "Fetching all posts…",
   );
 
@@ -99,10 +163,7 @@ export async function syncSite(config: Config, name: string, opts: SyncOptions =
     client.categories(),
     client.tags(),
   ]);
-  const catNames = new Map(categories.map((t) => [t.id, t.name]));
-  const tagNames = new Map(tags.map((t) => [t.id, t.name]));
-  const mediaIds = [...new Set(posts.map((p) => p.featured_media).filter((id) => id > 0))];
-  const media = new Map((await client.media(mediaIds)).map((m) => [m.id, m.source_url]));
+  const lookups = await fetchLookups(client, posts, { categories, tags });
 
   const result: SyncResult = { created: [], updated: [], renamed: 0, unchanged: 0, skipped: [], missingRemote: [] };
   const claimed = new Map(Object.entries(state.posts).map(([id, s]) => [s.file, id]));
@@ -131,44 +192,36 @@ export async function syncSite(config: Config, name: string, opts: SyncOptions =
       result.renamed++;
     }
 
-    if (prev && prev.modified_gmt === post.modified_gmt && !opts.force && (await Bun.file(join(root, prev.file)).exists())) {
+    const existing = Bun.file(join(root, file));
+    const exists = prev ? await existing.exists() : false;
+    const current = exists ? await existing.text() : null;
+
+    if (prev && current !== null && prev.modified_gmt === post.modified_gmt && !opts.force && !reconvert) {
       result.unchanged++;
       continue;
     }
 
     // Never clobber edits made locally since the last pull.
-    if (prev && !opts.force) {
-      const existing = Bun.file(join(root, prev.file));
-      if ((await existing.exists()) && hash(await existing.text()) !== prev.hash) {
+    if (prev && current !== null && !opts.force && hash(current) !== prev.hash) {
+      if (prev.modified_gmt !== post.modified_gmt) {
         result.skipped.push({ file: prev.file, reason: "local changes (use --force to overwrite)" });
-        continue;
+      } else {
+        result.unchanged++; // only our converter changed; leave your edits alone quietly
       }
+      continue;
     }
 
-    const raw = post.content.raw ?? post.content.rendered;
-    const fm: FrontMatter = {
-      id: post.id,
-      title: post.title.raw ?? post.title.rendered,
-      slug: post.slug,
-      status: post.status,
-      date: post.date,
-      modified_gmt: post.modified_gmt,
-      link: post.link,
-      categories: (post.categories ?? []).map((c) => catNames.get(c) ?? String(c)),
-      tags: (post.tags ?? []).map((t) => tagNames.get(t) ?? String(t)),
-      excerpt: (post.excerpt.raw ?? "").trim(),
-      featured_image: media.get(post.featured_media),
-      sticky: post.sticky || undefined,
-      complex_blocks: complexBlocks(raw),
-    };
-    const text = serialize(fm, htmlToMarkdown(raw));
+    const text = renderPost(post, lookups, await isFlattened(join(root, file)));
+    if (current === text) {
+      await Bun.write(join(root, ".omawp", "raw", `${post.id}.html`), post.content.raw ?? post.content.rendered);
+      state.posts[id] = { ...prev!, modified_gmt: post.modified_gmt };
+      result.unchanged++;
+      continue;
+    }
 
-    await Bun.write(join(root, file), text);
-    await Bun.write(join(metaDir, "raw", `${post.id}.html`), raw);
-
+    await writePost(site, post, file, text);
     if (prev) claimed.delete(prev.file);
     claimed.set(file, id);
-    state.posts[id] = { file, modified_gmt: post.modified_gmt, hash: hash(text) };
     (prev ? result.updated : result.created).push(file);
     log(`${prev ? "updated" : "created"}  ${file}`);
   }
@@ -186,6 +239,7 @@ export async function syncSite(config: Config, name: string, opts: SyncOptions =
   }
 
   state.layout = LAYOUT;
-  await Bun.write(statePath, JSON.stringify(state, null, 2) + "\n");
+  state.converter = CONVERTER;
+  await site.save();
   return result;
 }

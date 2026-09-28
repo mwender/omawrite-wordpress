@@ -56,10 +56,10 @@ test("pulls posts to Markdown with front matter", async () => {
     excerpt: "Short summary",
     featured_image: "https://example.test/uploads/42.jpg",
   });
-  expect(fm.complex_blocks).toBeUndefined();
   expect(body).toBe("Hello from post 1.\n");
 
-  expect(parse(await read("posts/2026/2026-01-01_post-3.md")).fm.complex_blocks).toEqual(["columns"]);
+  // Blocks Markdown can't represent stay as the original WordPress HTML.
+  expect(parse(await read("posts/2026/2026-01-01_post-3.md")).body).toContain('<!-- wp:columns --><div class="wp-block-columns">');
   expect(await read(".omawp/raw/1.html")).toContain("<!-- wp:paragraph -->");
 });
 

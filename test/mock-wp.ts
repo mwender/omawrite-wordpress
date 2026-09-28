@@ -37,15 +37,44 @@ export function startMockWP(posts: WPPost[]) {
     });
   };
 
+  const categories = [{ id: 1, name: "News", slug: "news" }, { id: 2, name: "Tips &amp; Tricks", slug: "tips" }];
+  const tags = [{ id: 5, name: "bun", slug: "bun" }];
+  const updates: { id: number; fields: Record<string, any> }[] = [];
+
   const server = Bun.serve({
     port: 0,
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url);
       requests.push(url);
       const route = url.pathname.replace(/^\/wp-json\/?/, "");
       if (route === "") return Response.json({ namespaces: ["oembed/1.0", "wp/v2"] });
       if (req.headers.get("Authorization") !== expected) {
         return Response.json({ code: "rest_not_logged_in", message: "Not logged in." }, { status: 401 });
+      }
+      const single = route.match(/^wp\/v2\/posts\/(\d+)$/);
+      if (single) {
+        const post = posts.find((p) => p.id === Number(single[1]));
+        if (!post) return Response.json({ code: "rest_post_invalid_id" }, { status: 404 });
+        if (req.method === "POST") {
+          const fields = (await req.json()) as Record<string, any>;
+          updates.push({ id: post.id, fields });
+          for (const [k, v] of Object.entries(fields)) {
+            if (k === "title" || k === "content" || k === "excerpt") (post as any)[k] = { raw: v, rendered: "" };
+            else (post as any)[k] = v;
+          }
+          // Like WordPress, give a post a slug from its title when it's published.
+          if (post.status === "publish" && !post.slug) post.slug = post.title.raw!.toLowerCase().replace(/\W+/g, "-");
+          post.modified = "2026-09-01T10:00:00";
+          post.modified_gmt = "2026-09-01T15:00:00";
+        }
+        return Response.json(post);
+      }
+      if (req.method === "POST" && (route === "wp/v2/categories" || route === "wp/v2/tags")) {
+        const list = route.endsWith("categories") ? categories : tags;
+        const { name } = (await req.json()) as { name: string };
+        const term = { id: 100 + list.length, name, slug: name.toLowerCase() };
+        list.push(term);
+        return Response.json(term, { status: 201 });
       }
       switch (route) {
         case "wp/v2/users/me":
@@ -55,9 +84,9 @@ export function startMockWP(posts: WPPost[]) {
           return paged(after ? posts.filter((p) => p.modified > after) : posts, url);
         }
         case "wp/v2/categories":
-          return paged([{ id: 1, name: "News", slug: "news" }, { id: 2, name: "Tips & Tricks", slug: "tips" }], url);
+          return paged(categories, url);
         case "wp/v2/tags":
-          return paged([{ id: 5, name: "bun", slug: "bun" }], url);
+          return paged(tags, url);
         case "wp/v2/media": {
           const ids = (url.searchParams.get("include") ?? "").split(",").map(Number);
           return paged(ids.map((id) => ({ id, source_url: `https://example.test/uploads/${id}.jpg` })), url);
@@ -67,5 +96,5 @@ export function startMockWP(posts: WPPost[]) {
     },
   });
 
-  return { server, requests, url: `http://localhost:${server.port}`, api: `http://localhost:${server.port}/wp-json/` };
+  return { server, requests, updates, url: `http://localhost:${server.port}`, api: `http://localhost:${server.port}/wp-json/` };
 }

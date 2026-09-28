@@ -4,6 +4,7 @@ import { loadConfig, saveConfig, siteDir, CONFIG_PATH } from "./config.ts";
 import { storePassword, deletePassword } from "./secrets.ts";
 import { WPClient, WPError, discoverApi } from "./wp.ts";
 import { syncSite } from "./sync.ts";
+import { pushFile, flattenFile, type PushPlan } from "./push.ts";
 import { ask, askSecret } from "./prompt.ts";
 
 const HELP = `omawp — sync WordPress posts to local Markdown
@@ -13,10 +14,16 @@ Usage:
   omawp sites                                      List configured sites
   omawp remove <name>                              Remove a site and its stored password
   omawp sync [site...] [--full] [--force]          Pull posts to Markdown (all sites if none given)
+  omawp push <file...> [--dry-run] [-y] [--force] [--flatten]
+                                                   Send edited posts back (shows a diff, asks first)
+  omawp flatten <file...>                          Convert a post's raw WordPress HTML to Markdown
 
 Options:
-  --full    Fetch every post instead of only recently modified ones
-  --force   Overwrite local files even if you've edited them
+  --full      sync: fetch every post instead of only recently modified ones
+  --force     sync: overwrite local edits. push: overwrite changes made on WordPress
+  --dry-run   push: show what would change without sending anything
+  -y, --yes   push: don't ask for confirmation
+  --flatten   push: allow WordPress blocks (galleries etc.) to be replaced by Markdown
 
 Config: ${CONFIG_PATH}
 `;
@@ -104,6 +111,63 @@ async function cmdSync(args: string[], flags: { full?: boolean; force?: boolean 
   if (failed) process.exitCode = 1;
 }
 
+const color = (code: number) => (s: string) => (process.stdout.isTTY ? `\x1b[${code}m${s}\x1b[0m` : s);
+const red = color(31), green = color(32), cyan = color(36), dim = color(2);
+
+function printPlan(plan: PushPlan) {
+  console.log(`\n▸ ${plan.site}: ${plan.file} (post ${plan.id})`);
+  for (const c of plan.changes) console.log(`  ${c.field}: ${red(c.from || "(empty)")} → ${green(c.to || "(empty)")}`);
+  for (const t of plan.newTerms) console.log(`  ${dim(`will create ${t.taxonomy === "tags" ? "tag" : "category"} "${t.name}"`)}`);
+  if (plan.contentDiff) {
+    console.log("  content:");
+    for (const line of plan.contentDiff.trimEnd().split("\n")) {
+      const out = `    ${line}`;
+      console.log(line.startsWith("+") ? green(out) : line.startsWith("-") ? red(out) : line.startsWith("@@") ? cyan(out) : dim(out));
+    }
+  }
+}
+
+async function cmdPush(files: string[], flags: { "dry-run"?: boolean; yes?: boolean; force?: boolean; flatten?: boolean }) {
+  if (files.length === 0) throw new Error("Usage: omawp push <file...>");
+  const config = await loadConfig();
+  if (!flags.yes && !flags["dry-run"] && !process.stdin.isTTY) {
+    throw new Error("Refusing to push without confirmation when not interactive. Use --yes or --dry-run.");
+  }
+  let failed = false;
+  for (const file of files) {
+    try {
+      const r = await pushFile(config, file, {
+        dryRun: flags["dry-run"],
+        force: flags.force,
+        flatten: flags.flatten,
+        confirm: async (plan) => {
+          printPlan(plan);
+          return flags.yes || /^y(es)?$/i.test(await ask("\n  Push these changes?", "y/N"));
+        },
+      });
+      if (r.status === "dry-run") {
+        printPlan(r.plan!);
+        console.log(dim("\n  (dry run — nothing sent)"));
+      } else if (r.status === "no-changes") console.log(`${file}: no changes to push`);
+      else if (r.status === "declined") console.log("  Not pushed.");
+      else console.log(`  ✓ Pushed. Local file refreshed from WordPress: ${r.file}`);
+    } catch (e) {
+      failed = true;
+      console.error(`✗ ${file}: ${(e as Error).message}`);
+    }
+  }
+  if (failed) process.exitCode = 1;
+}
+
+async function cmdFlatten(files: string[]) {
+  if (files.length === 0) throw new Error("Usage: omawp flatten <file...>");
+  const config = await loadConfig();
+  for (const file of files) {
+    const n = await flattenFile(config, file);
+    console.log(`${file}: converted ${n} WordPress block${n === 1 ? "" : "s"} to Markdown (flatten: true)`);
+  }
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     args: Bun.argv.slice(2),
@@ -113,6 +177,9 @@ async function main() {
       user: { type: "string" },
       full: { type: "boolean" },
       force: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
+      flatten: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -131,6 +198,10 @@ async function main() {
     case "pull":
       // Accept `omawp sync posts` as a synonym for syncing all sites.
       return cmdSync(args[0] === "posts" ? args.slice(1) : args, values);
+    case "push":
+      return cmdPush(args, values);
+    case "flatten":
+      return cmdFlatten(args);
     default:
       console.log(HELP);
       if (command && !values.help) process.exitCode = 1;

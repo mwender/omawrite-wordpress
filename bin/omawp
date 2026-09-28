@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 # Launcher: runs the CLI with the project's mise-pinned Bun, from any directory.
+# Only Bun's location comes from the project; the CLI runs in your current
+# directory so relative paths (omawp push my-post.md) work.
 root="$(dirname "$(dirname "$(readlink -f "$0")")")"
-exec mise exec -C "$root" -- bun "$root/src/cli.ts" "$@"
+bun="$(mise which -C "$root" bun)" || exit 1
+exec "$bun" "$root/src/cli.ts" "$@"
