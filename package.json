@@ -1,5 +1,11 @@
 {
   "name": "omawrite-wordpress",
+  "description": "Sync WordPress posts to local Markdown, edit them in Omawrite, and push them back",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mwender/omawrite-wordpress.git"
+  },
   "type": "module",
   "private": true,
   "devDependencies": {

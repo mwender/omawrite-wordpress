@@ -1,3 +1,5 @@
+![omawp: sync WordPress posts to Markdown, edit in Omawrite, push them back](.github/social-preview.png)
+
 # omawrite-wordpress (`omawp`)
 
 Sync WordPress posts to local Markdown files so you can browse and edit them in
@@ -192,3 +194,7 @@ Classic-editor posts are pushed back in classic format (no block markup is added
 3. `status`, `diff`, `new`
 4. OpenTUI browser
 5. ~~Featured images and inline images from local files, optimized to WebP~~
+
+## License
+
+[MIT](LICENSE)
