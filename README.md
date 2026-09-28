@@ -27,6 +27,7 @@ omawp sync blog --force        # overwrite local edits
 omawp push posts/2026/2026-09-25_my-post.md --dry-run   # show the diff, send nothing
 omawp push posts/drafts/my-draft.md                     # show the diff, ask, then send
 omawp flatten posts/2026/2026-09-25_my-post.md          # turn a post's raw HTML into Markdown
+omawp optimize posts/drafts/my-draft.md                 # convert the post's local images to WebP
 omawp find 2026-09-25_my-post.md      # print a synced post's full path by file name
 omawp remove blog
 ```
@@ -46,7 +47,7 @@ Add the bindings to `~/.config/hypr/bindings.lua` (Omarchy, Hyprland Lua config)
 
 ```lua
 o.bind("SUPER + ALT + P", "omawp: push post", os.getenv("HOME") .. "/.local/bin/omawp-omawrite push")
-o.bind("SUPER + ALT + O", "omawp: optimize featured image", os.getenv("HOME") .. "/.local/bin/omawp-omawrite optimize")
+o.bind("SUPER + ALT + O", "omawp: optimize images", os.getenv("HOME") .. "/.local/bin/omawp-omawrite optimize")
 o.bind("SUPER + SHIFT + ALT + P", "omawp: sync site", os.getenv("HOME") .. "/.local/bin/omawp-omawrite sync")
 ```
 
@@ -56,7 +57,7 @@ Then `hyprctl reload && hyprctl configerrors`. Check keys are free first with
 | Shortcut | Does |
 |---|---|
 | `Super+Alt+P` | `omawp push` the open post (diff, then confirm) |
-| `Super+Alt+O` | `omawp optimize` its local featured image to WebP |
+| `Super+Alt+O` | `omawp optimize` its local images (featured and body) to WebP |
 | `Super+Shift+Alt+P` | `omawp sync` the post's site |
 
 - If the post has unsaved changes (title starts with `* `), push and optimize ask you to save
@@ -126,6 +127,30 @@ maxSize = 2048
 and a file is never uploaded twice (omawp remembers uploads by content). After the push
 the line shows the image's WordPress URL. Supported: jpg, png, gif, webp, avif.
 
+## Images in the post body
+
+Local images in the body are uploaded on push, the same way as the featured image
+(optimized to WebP first, never uploaded twice, paths resolved against `posts/` first):
+
+```markdown
+![A screenshot](img/screenshot.png)
+
+Inline works too: ![icon](img/icon.png), and so does <img src="img/photo.jpg" alt="…">.
+```
+
+- An image alone in its paragraph becomes a WordPress image block tied to its media item,
+  so WordPress serves resized versions (`srcset`). Inline and HTML images get the URL.
+  Classic-editor posts get plain `<img>` tags.
+- The confirm step lists each upload with before/after size; the diff shows placeholders
+  (`(upload) screenshot.webp`) until you confirm.
+- A missing or unsupported local image stops the push before anything is sent.
+- Images already on WordPress (URLs) are left alone, as are image paths inside code blocks.
+- After the push the file is refreshed from WordPress, so the image shows as its block HTML.
+
+`omawp optimize <post>` converts **all** of a post's local images — featured and body — to
+WebP next to the originals and rewrites just those references (`img/shot.png` →
+`img/shot.webp`). `Super+Alt+O` in Omawrite runs it.
+
 ## WordPress blocks and raw HTML
 
 A block becomes Markdown only if converting it back reproduces the original exactly.
@@ -166,4 +191,4 @@ Classic-editor posts are pushed back in classic format (no block markup is added
 2. ~~`push` with conflict detection~~
 3. `status`, `diff`, `new`
 4. OpenTUI browser
-5. ~~Featured images from local files~~; inline images (`![](img/x.png)` uploaded on push)
+5. ~~Featured images and inline images from local files, optimized to WebP~~

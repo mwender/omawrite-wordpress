@@ -6,7 +6,7 @@ import { openSite, fetchLookups, renderPost, writePost, postPath, hash, type Sit
 import { parse, serialize } from "./frontmatter.ts";
 import { htmlToMarkdown, markdownToHtml, rawBlockNames } from "./convert.ts";
 import { hasBlocks } from "./blocks.ts";
-import { planFeaturedImage } from "./media.ts";
+import { planFeaturedImage, planBodyImages, UploadSession } from "./media.ts";
 import type { WPPost, WPTerm } from "./wp.ts";
 
 export interface PushOptions {
@@ -108,7 +108,12 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
     }
   }
 
-  const content = markdownToHtml(body, { classic: !hasBlocks(savedRaw) });
+  // Local images (featured and in the body) are optimized and uploaded once each, after
+  // confirmation. Until then the diff shows placeholders for new uploads.
+  const session = new UploadSession(site, join(site.root, rel), { optimize: opts.optimize, settings: imageSettings(config) });
+  const classic = !hasBlocks(savedRaw);
+  const bodyImages = bodyTouched ? await planBodyImages(body, session, { classic }) : null;
+  const content = markdownToHtml(bodyImages?.hasImages ? bodyImages.preview() : body, { classic });
   const [categories, tags] = await Promise.all([site.client.categories(), site.client.tags()]);
   const cats = resolveTerms(fm.categories ?? [], categories);
   const tgs = resolveTerms(fm.tags ?? [], tags);
@@ -148,11 +153,9 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
     featured_image: touched("featured_image") ? fm.featured_image : undefined,
     featured_image_alt: touched("featured_image_alt") ? fm.featured_image_alt : undefined,
   };
-  const featured = await planFeaturedImage(site, featuredFm, remote, join(site.root, rel), {
-    optimize: opts.optimize,
-    settings: imageSettings(config),
-  });
+  const featured = await planFeaturedImage(site, featuredFm, remote, session);
   changes.push(...featured.changes);
+  if (bodyImages) changes.push(...bodyImages.changes);
 
   const remoteContent = remote.content.raw ?? "";
   let contentDiff: string | null = null;
@@ -176,6 +179,9 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
 
   const featuredMedia = await featured.apply();
   if (featuredMedia !== undefined) payload.featured_media = featuredMedia;
+  if (bodyImages?.hasImages && payload.content !== undefined) {
+    payload.content = markdownToHtml(await bodyImages.apply(), { classic });
+  }
 
   // Only alt text changed? That lives on the media item; nothing to send for the post.
   const updated = Object.keys(payload).length ? await site.client.updatePost(id, payload) : await site.client.post(id);

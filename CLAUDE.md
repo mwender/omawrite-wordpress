@@ -10,7 +10,7 @@ run commands with `mise exec -- bun …` if Bun isn't on PATH.
   push turns Markdown into canonical Gutenberg blocks (classic posts stay classic). Bump `CONVERTER` on output changes.
 - `src/blocks.ts` — Gutenberg block delimiter parser (top-level segments)
 - `src/push.ts` — push (conflict check, raw-block safety check, diff/confirm) and `flatten`
-- `src/media.ts` — featured image resolution/upload for push (planned first, applied after confirm)
+- `src/media.ts` — local image uploads for push (`UploadSession`: once per file), featured image, body images, `optimize`; planned first, applied after confirm
 - `src/optimize.ts` — deterministic WebP optimization (sharp pinned exactly; bumping it changes output)
 - `src/frontmatter.ts`, `src/config.ts`, `src/secrets.ts` (libsecret via `secret-tool`), `src/prompt.ts`
 - `bin/omawp-omawrite` — Hyprland-bound helper: runs omawp on the post open in the focused Omawrite window

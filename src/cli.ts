@@ -18,7 +18,7 @@ Usage:
   omawp push <file...> [--dry-run] [-y] [--force] [--flatten] [--no-optimize]
                                                    Send edited posts back (shows a diff, asks first)
   omawp flatten <file...>                          Convert a post's raw WordPress HTML to Markdown
-  omawp optimize <file...>                         Convert a post's local featured image to WebP
+  omawp optimize <file...>                         Convert a post's local images to WebP
   omawp find <filename> [--site]                   Print the path of a synced post by file name
 
 Options:
@@ -183,10 +183,16 @@ async function cmdOptimize(files: string[]) {
   if (files.length === 0) throw new Error("Usage: omawp optimize <file...>");
   const config = await loadConfig();
   for (const file of files) {
-    const r = await optimizePost(siteDir(config, locate(config, file).site), file, imageSettings(config));
-    if (!r) console.log(`${file}: no local featured image to optimize`);
-    else if (!r.frontMatter) console.log(`${file}: ${r.file} ${r.result}`);
-    else console.log(`${file}: ${r.frontMatter.to} (${r.result})\n  featured_image: ${r.frontMatter.from} → ${r.frontMatter.to}`);
+    const reports = await optimizePost(siteDir(config, locate(config, file).site), file, imageSettings(config));
+    if (!reports.length) {
+      console.log(`${file}: no local images to optimize`);
+      continue;
+    }
+    console.log(file);
+    for (const r of reports) {
+      const where = r.where === "featured_image" ? "featured_image" : "image";
+      console.log(r.to ? `  ${where}: ${r.image} → ${r.to} (${r.result})` : `  ${where}: ${r.image} ${r.result}`);
+    }
   }
 }
 

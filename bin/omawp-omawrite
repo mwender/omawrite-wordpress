@@ -3,7 +3,7 @@
 # Bound to keys in ~/.config/hypr/bindings.lua; see README "Using omawp from Omawrite".
 #
 #   omawp-omawrite push       push the post (shows the diff, asks first)
-#   omawp-omawrite optimize   convert the post's local featured image to WebP
+#   omawp-omawrite optimize   convert the post's local images (featured and body) to WebP
 #   omawp-omawrite sync       pull the post's site
 #
 # OMAWP_ACTIVE_WINDOW (JSON with class/title) overrides `hyprctl activewindow` for testing.
