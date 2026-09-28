@@ -115,8 +115,11 @@ Classic-editor posts are pushed back in classic format (no block markup is added
 ## Push behavior
 
 - Checks the post hasn't changed on WordPress since your last sync (`--force` overrides).
+- Sends only what **you** changed since the last sync/push — each front matter field and the
+  body separately. Fields you didn't touch are never sent, so `--force` doesn't undo edits made
+  in WP-Admin or things WordPress changes itself (a draft's date moves on every save).
 - Shows changed fields and a content diff, then asks before sending (`-y` skips, `--dry-run` only shows).
-- Sends only changed fields. Unknown categories/tags are created.
+- Unknown categories/tags are created.
 - Rewrites the local file from what WordPress saved, moving it if needed (e.g. a draft you published).
 
 ## Roadmap

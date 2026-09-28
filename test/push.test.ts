@@ -272,3 +272,62 @@ test("explains featured image problems before sending anything", async () => {
   expect(mock.uploads).toEqual([]);
   expect(mock.updates).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------
+// Only what you changed is sent
+// ---------------------------------------------------------------------------
+
+// Simulate someone saving the post in WP-Admin after our last sync.
+const savedInWordPress = (post: WPPost, changes: Partial<WPPost> = {}) =>
+  Object.assign(post, { modified: "2026-08-01T10:00:00", modified_gmt: "2026-08-01T14:00:00", ...changes });
+
+test("a draft date WordPress moved on save isn't pushed back", async () => {
+  const rel = "posts/drafts/post-2.md";
+  savedInWordPress(posts[1]!, { date: "2026-08-01T10:00:00" }); // floating draft date moved
+  await edit(rel, (s) => s.replace("title: Post 2", "title: Better draft title"));
+
+  await expect(pushFile(config, path(rel), yes)).rejects.toThrow("changed on WordPress");
+  const r = await pushFile(config, path(rel), { ...yes, force: true });
+  expect(r.plan!.changes).toEqual([{ field: "title", from: "Post 2", to: "Better draft title" }]);
+  expect(mock.updates).toEqual([{ id: 2, fields: { title: "Better draft title" } }]);
+});
+
+test("--force keeps WordPress edits to fields you didn't change", async () => {
+  savedInWordPress(posts[0]!, {
+    content: { raw: "<!-- wp:paragraph -->\n<p>Edited in WP-Admin.</p>\n<!-- /wp:paragraph -->", rendered: "" },
+    featured_media: 43,
+    tags: [],
+  });
+  await edit(POST1, (s) => s.replace("title: Post 1", "title: New title"));
+  await pushFile(config, path(POST1), { ...yes, force: true });
+  expect(mock.updates).toEqual([{ id: 1, fields: { title: "New title" } }]);
+
+  // The refreshed file shows everything WordPress has now.
+  const { fm, body } = parse(await Bun.file(path(POST1)).text());
+  expect(body).toBe("Edited in WP-Admin.\n");
+  expect(fm.featured_image).toBe("https://example.test/uploads/2026/09/hero.webp");
+  expect(fm.tags).toBeUndefined();
+});
+
+test("body edits are still sent in full", async () => {
+  savedInWordPress(posts[0]!, { date: "2026-08-01T10:00:00" });
+  await edit(POST1, (s) => s.replace("Hello from post 1.", "Hello, edited."));
+  await pushFile(config, path(POST1), { ...yes, force: true });
+  expect(Object.keys(mock.updates[0]!.fields)).toEqual(["content"]);
+});
+
+test("sync backfills snapshots for files synced before they existed", async () => {
+  const statePath = join(dir, "test/.omawp/state.json");
+  const state = await Bun.file(statePath).json();
+  for (const s of Object.values<any>(state.posts)) delete s.base;
+  await Bun.write(statePath, JSON.stringify(state));
+
+  await syncSite(config, "test");
+  const after = await Bun.file(statePath).json();
+  expect(after.posts["1"].base.fields.title).toBe("Post 1");
+
+  savedInWordPress(posts[0]!, { date: "2026-08-01T10:00:00" });
+  await edit(POST1, (s) => s.replace("title: Post 1", "title: Retitled"));
+  await pushFile(config, path(POST1), { ...yes, force: true });
+  expect(mock.updates).toEqual([{ id: 1, fields: { title: "Retitled" } }]);
+});

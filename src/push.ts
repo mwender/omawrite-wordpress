@@ -72,11 +72,20 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
   if (!state) throw new Error(`Post ${id} hasn't been synced yet. Run \`omawp sync ${siteName}\` first.`);
   if (hash(text) === state.hash) return { status: "no-changes" };
 
+  // Only what you changed since the last sync/push is sent. WordPress changes things on
+  // its own (a draft's date moves on every save), and edits made there since shouldn't be
+  // undone by fields you never touched. Without a snapshot, fall back to sending anything
+  // that differs from WordPress.
+  const base = state.base;
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const touched = (key: string) => !base || !same(fm[key] === "" ? null : fm[key], base.fields[key] === "" ? null : base.fields[key]);
+  const bodyTouched = !base || hash(body) !== base.body;
+
   const remote = await site.client.post(id);
   if (remote.modified_gmt !== state.modified_gmt && !opts.force) {
     throw new Error(
       `Post ${id} was changed on WordPress (${remote.modified_gmt} GMT) since your last sync. ` +
-        `Pushing would overwrite that. Use --force to push anyway.`,
+        `Use --force to push anyway (only the fields you changed are sent), or sync first if you haven't edited it.`,
     );
   }
 
@@ -84,7 +93,7 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
   // push would silently replace them with plain Markdown.
   const savedRaw = await Bun.file(join(site.root, ".omawp", "raw", `${id}.html`)).text();
   const flatten = opts.flatten || fm.flatten === true;
-  if (!flatten) {
+  if (!flatten && bodyTouched) {
     const have = countNames(rawBlockNames(body));
     const missing: string[] = [];
     for (const [name, n] of countNames(rawBlockNames(htmlToMarkdown(savedRaw)))) {
@@ -111,28 +120,35 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
     payload[name] = value;
     changes.push({ field: name, from: String(from ?? ""), to: String(to ?? "") });
   };
-  field("title", remote.title.raw, fm.title ?? "");
-  if (fm.slug) field("slug", remote.slug, fm.slug);
-  if (fm.status) field("status", remote.status, fm.status);
-  if (fm.date) field("date", remote.date, fm.date);
-  field("excerpt", (remote.excerpt.raw ?? "").trim(), fm.excerpt ?? "");
-  field("sticky", !!remote.sticky, !!fm.sticky, !!fm.sticky);
+  if (touched("title")) field("title", remote.title.raw, fm.title ?? "");
+  if (fm.slug && touched("slug")) field("slug", remote.slug, fm.slug);
+  if (fm.status && touched("status")) field("status", remote.status, fm.status);
+  if (fm.date && touched("date")) field("date", remote.date, fm.date);
+  if (touched("excerpt")) field("excerpt", (remote.excerpt.raw ?? "").trim(), fm.excerpt ?? "");
+  if (touched("sticky")) field("sticky", !!remote.sticky, !!fm.sticky, !!fm.sticky);
 
   const names = (ids: number[] = [], terms: WPTerm[]) => ids.map((i) => terms.find((t) => t.id === i)?.name ?? i).join(", ");
+  const catsTouched = touched("categories");
+  const tagsTouched = touched("tags");
   const newTerms = [
-    ...cats.missing.map((name) => ({ taxonomy: "categories" as const, name })),
-    ...tgs.missing.map((name) => ({ taxonomy: "tags" as const, name })),
+    ...(catsTouched ? cats.missing.map((name) => ({ taxonomy: "categories" as const, name })) : []),
+    ...(tagsTouched ? tgs.missing.map((name) => ({ taxonomy: "tags" as const, name })) : []),
   ];
-  if (!sameSet(remote.categories, cats.ids) || cats.missing.length) {
+  if (catsTouched && (!sameSet(remote.categories, cats.ids) || cats.missing.length)) {
     changes.push({ field: "categories", from: names(remote.categories, categories), to: (fm.categories ?? []).join(", ") });
     payload.categories = cats.ids;
   }
-  if (!sameSet(remote.tags, tgs.ids) || tgs.missing.length) {
+  if (tagsTouched && (!sameSet(remote.tags, tgs.ids) || tgs.missing.length)) {
     changes.push({ field: "tags", from: names(remote.tags, tags), to: (fm.tags ?? []).join(", ") });
     payload.tags = tgs.ids;
   }
 
-  const featured = await planFeaturedImage(site, fm, remote, join(site.root, rel), {
+  const featuredFm = {
+    ...fm,
+    featured_image: touched("featured_image") ? fm.featured_image : undefined,
+    featured_image_alt: touched("featured_image_alt") ? fm.featured_image_alt : undefined,
+  };
+  const featured = await planFeaturedImage(site, featuredFm, remote, join(site.root, rel), {
     optimize: opts.optimize,
     settings: imageSettings(config),
   });
@@ -140,7 +156,7 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
 
   const remoteContent = remote.content.raw ?? "";
   let contentDiff: string | null = null;
-  if (content.trim() !== remoteContent.trim()) {
+  if (bodyTouched && content.trim() !== remoteContent.trim()) {
     payload.content = content;
     contentDiff = createTwoFilesPatch("wordpress", "local", remoteContent.trim() + "\n", content.trim() + "\n", "", "", { context: 2 })
       .split("\n")

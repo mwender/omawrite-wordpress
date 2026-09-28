@@ -10,6 +10,23 @@ export interface PostState {
   file: string; // relative to the site dir
   modified_gmt: string;
   hash: string; // hash of the file as last written by omawp, to detect local edits
+  base?: Snapshot; // what the file said when last written, so push sends only your changes
+}
+
+// Front matter fields push can send, plus a hash of the body.
+export interface Snapshot {
+  fields: Record<string, unknown>;
+  body: string;
+}
+
+export const PUSH_FIELDS = [
+  "title", "slug", "status", "date", "excerpt", "sticky",
+  "categories", "tags", "featured_image", "featured_image_alt",
+] as const;
+
+export function snapshot(text: string): Snapshot {
+  const { fm, body } = parse(text);
+  return { fields: Object.fromEntries(PUSH_FIELDS.map((k) => [k, fm[k] ?? null])), body: hash(body) };
 }
 
 export interface SiteState {
@@ -140,13 +157,23 @@ export async function isFlattened(path: string): Promise<boolean> {
 export async function writePost(site: Site, post: WPPost, file: string, text: string): Promise<void> {
   await Bun.write(join(site.root, file), text);
   await Bun.write(join(site.root, ".omawp", "raw", `${post.id}.html`), post.content.raw ?? post.content.rendered);
-  site.state.posts[String(post.id)] = { file, modified_gmt: post.modified_gmt, hash: hash(text) };
+  site.state.posts[String(post.id)] = { file, modified_gmt: post.modified_gmt, hash: hash(text), base: snapshot(text) };
 }
 
 export async function syncSite(config: Config, name: string, opts: SyncOptions = {}): Promise<SyncResult> {
   const log = opts.log ?? (() => {});
   const site = await openSite(config, name);
   const { root, state, client } = site;
+
+  // Files synced before snapshots existed: an unedited file is exactly what was last
+  // written, so its snapshot can be taken from the file itself.
+  for (const entry of Object.values(state.posts)) {
+    if (entry.base) continue;
+    const f = Bun.file(join(root, entry.file));
+    if (!(await f.exists())) continue;
+    const text = await f.text();
+    if (hash(text) === entry.hash) entry.base = snapshot(text);
+  }
 
   const tracked = Object.keys(state.posts).length > 0;
   const relayout = tracked && state.layout !== LAYOUT;
@@ -216,7 +243,7 @@ export async function syncSite(config: Config, name: string, opts: SyncOptions =
     const text = renderPost(post, lookups, await isFlattened(join(root, file)));
     if (current === text) {
       await Bun.write(join(root, ".omawp", "raw", `${post.id}.html`), post.content.raw ?? post.content.rendered);
-      state.posts[id] = { ...prev!, modified_gmt: post.modified_gmt };
+      state.posts[id] = { ...prev!, modified_gmt: post.modified_gmt, base: snapshot(text) };
       result.unchanged++;
       continue;
     }
