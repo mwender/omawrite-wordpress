@@ -13,6 +13,7 @@ run commands with `mise exec -- bun …` if Bun isn't on PATH.
 - `src/media.ts` — featured image resolution/upload for push (planned first, applied after confirm)
 - `src/optimize.ts` — deterministic WebP optimization (sharp pinned exactly; bumping it changes output)
 - `src/frontmatter.ts`, `src/config.ts`, `src/secrets.ts` (libsecret via `secret-tool`), `src/prompt.ts`
+- `bin/omawp-omawrite` — Hyprland-bound helper: runs omawp on the post open in the focused Omawrite window
 - `test/` — `bun test`; `test/mock-wp.ts` is a fake WP REST server
 
 Rules: never overwrite locally edited files without `--force`; never store passwords in config;

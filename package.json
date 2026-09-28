@@ -19,12 +19,13 @@
     "yaml": "^2.9.1"
   },
   "bin": {
-    "omawp": "bin/omawp"
+    "omawp": "bin/omawp",
+    "omawp-omawrite": "bin/omawp-omawrite"
   },
   "scripts": {
     "omawp": "bun src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "link": "ln -sf \"$PWD/bin/omawp\" ~/.local/bin/omawp"
+    "link": "ln -sf \"$PWD/bin/omawp\" ~/.local/bin/omawp && ln -sf \"$PWD/bin/omawp-omawrite\" ~/.local/bin/omawp-omawrite"
   }
 }

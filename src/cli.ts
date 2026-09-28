@@ -19,6 +19,7 @@ Usage:
                                                    Send edited posts back (shows a diff, asks first)
   omawp flatten <file...>                          Convert a post's raw WordPress HTML to Markdown
   omawp optimize <file...>                         Convert a post's local featured image to WebP
+  omawp find <filename> [--site]                   Print the path of a synced post by file name
 
 Options:
   --full      sync: fetch every post instead of only recently modified ones
@@ -189,6 +190,23 @@ async function cmdOptimize(files: string[]) {
   }
 }
 
+// Omawrite's window title only has the file name; this maps it back to a synced post.
+async function cmdFind(args: string[], flags: { site?: boolean }) {
+  const name = args[0];
+  if (!name) throw new Error("Usage: omawp find <filename> [--site]");
+  const config = await loadConfig();
+  let found = 0;
+  for (const site of Object.keys(config.sites)) {
+    const root = siteDir(config, site);
+    const literal = name.replace(/[[\]{}*?!\\]/g, "\\$&"); // match the name literally
+    for await (const rel of new Bun.Glob(`posts/**/${literal}`).scan({ cwd: root, onlyFiles: true })) {
+      console.log(flags.site ? `${site}\t${root}/${rel}` : `${root}/${rel}`);
+      found++;
+    }
+  }
+  if (!found) process.exitCode = 1;
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     args: Bun.argv.slice(2),
@@ -202,6 +220,7 @@ async function main() {
       yes: { type: "boolean", short: "y" },
       flatten: { type: "boolean" },
       "no-optimize": { type: "boolean" },
+      site: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -226,6 +245,8 @@ async function main() {
       return cmdFlatten(args);
     case "optimize":
       return cmdOptimize(args);
+    case "find":
+      return cmdFind(args, values);
     default:
       console.log(HELP);
       if (command && !values.help) process.exitCode = 1;

@@ -27,8 +27,46 @@ omawp sync blog --force        # overwrite local edits
 omawp push posts/2026/2026-09-25_my-post.md --dry-run   # show the diff, send nothing
 omawp push posts/drafts/my-draft.md                     # show the diff, ask, then send
 omawp flatten posts/2026/2026-09-25_my-post.md          # turn a post's raw HTML into Markdown
+omawp find 2026-09-25_my-post.md      # print a synced post's full path by file name
 omawp remove blog
 ```
+
+## Using omawp from Omawrite
+
+Omawrite has no plugin system, so omawp hooks in from the outside: a keyboard shortcut runs
+`bin/omawp-omawrite`, which reads the focused Omawrite window's title (`<file>.md - Omawrite`),
+finds that post among your synced sites (`omawp find`), and runs omawp on it in a floating
+terminal, where you see the diff and confirm as usual.
+
+```sh
+bun run link    # also links bin/omawp-omawrite into ~/.local/bin
+```
+
+Add the bindings to `~/.config/hypr/bindings.lua` (Omarchy, Hyprland Lua config):
+
+```lua
+o.bind("SUPER + ALT + P", "omawp: push post", os.getenv("HOME") .. "/.local/bin/omawp-omawrite push")
+o.bind("SUPER + ALT + O", "omawp: optimize featured image", os.getenv("HOME") .. "/.local/bin/omawp-omawrite optimize")
+o.bind("SUPER + SHIFT + ALT + P", "omawp: sync site", os.getenv("HOME") .. "/.local/bin/omawp-omawrite sync")
+```
+
+Then `hyprctl reload && hyprctl configerrors`. Check keys are free first with
+`omarchy menu keybindings --print`.
+
+| Shortcut | Does |
+|---|---|
+| `Super+Alt+P` | `omawp push` the open post (diff, then confirm) |
+| `Super+Alt+O` | `omawp optimize` its local featured image to WebP |
+| `Super+Shift+Alt+P` | `omawp sync` the post's site |
+
+- If the post has unsaved changes (title starts with `* `), push and optimize ask you to save
+  first; sync still runs.
+- If the focused window isn't Omawrite, or the file isn't a synced post, you get a notification
+  instead.
+- After push or sync rewrites the file, Omawrite notices the change on disk and offers to reload.
+- The terminal uses Omarchy's `org.omarchy.terminal` app id, so it floats and centers.
+- For testing: `OMAWP_ACTIVE_WINDOW='{"class":"omawrite","title":"x.md - Omawrite"}' OMAWP_DRY=1 omawp-omawrite push`
+  prints the command instead of running it.
 
 ## Where things live
 

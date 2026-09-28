@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Run omawp on the post open in the focused Omawrite window, in a floating terminal.
+# Bound to keys in ~/.config/hypr/bindings.lua; see README "Using omawp from Omawrite".
+#
+#   omawp-omawrite push       push the post (shows the diff, asks first)
+#   omawp-omawrite optimize   convert the post's local featured image to WebP
+#   omawp-omawrite sync       pull the post's site
+#
+# OMAWP_ACTIVE_WINDOW (JSON with class/title) overrides `hyprctl activewindow` for testing.
+
+set -uo pipefail
+
+action="${1:-}"
+case "$action" in
+  push | optimize | sync) ;;
+  *) echo "usage: omawp-omawrite push|optimize|sync" >&2; exit 2 ;;
+esac
+
+notify() { notify-send -a omawp "omawp $action" "$1"; }
+
+window="${OMAWP_ACTIVE_WINDOW:-$(hyprctl activewindow -j)}"
+class="$(jq -r '.class // ""' <<<"$window")"
+title="$(jq -r '.title // ""' <<<"$window")"
+
+if [[ "$class" != "omawrite" ]]; then
+  notify "Focus an Omawrite window with a synced post first."
+  exit 1
+fi
+
+# Title is "<name> - Omawrite", with a leading "* " when there are unsaved changes.
+name="${title% - Omawrite}"
+if [[ "$name" == "* "* ]]; then
+  if [[ "$action" != "sync" ]]; then
+    notify "Save the post first (Ctrl+S)."
+    exit 1
+  fi
+  name="${name#\* }"
+fi
+
+mapfile -t matches < <(omawp find "$name" --site)
+if (( ${#matches[@]} == 0 )); then
+  notify "$name isn't a synced post (not under any site's posts/ folder)."
+  exit 1
+elif (( ${#matches[@]} > 1 )); then
+  notify "More than one synced post is named $name."
+  exit 1
+fi
+site="${matches[0]%%$'\t'*}"
+file="${matches[0]#*$'\t'}"
+
+case "$action" in
+  push) cmd=(omawp push "$file") ;;
+  optimize) cmd=(omawp optimize "$file") ;;
+  sync) cmd=(omawp sync "$site") ;;
+esac
+
+if [[ -n "${OMAWP_DRY:-}" ]]; then # testing: print what would run
+  printf '%q ' "${cmd[@]}"; echo
+  exit 0
+fi
+
+# org.omarchy.terminal gets Omarchy's floating, centered window rule.
+script="cd $(printf '%q' "$(dirname "$file")") && $(printf '%q ' "${cmd[@]}"); echo; read -n1 -rsp 'Press any key to close'"
+exec setsid uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.terminal --title="omawp $action" -e bash -c "$script"
