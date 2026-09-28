@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
-import { loadConfig, saveConfig, siteDir, CONFIG_PATH } from "./config.ts";
+import { loadConfig, saveConfig, siteDir, imageSettings, CONFIG_PATH } from "./config.ts";
 import { storePassword, deletePassword } from "./secrets.ts";
 import { WPClient, WPError, discoverApi } from "./wp.ts";
 import { syncSite } from "./sync.ts";
-import { pushFile, flattenFile, type PushPlan } from "./push.ts";
+import { pushFile, flattenFile, locate, type PushPlan } from "./push.ts";
+import { optimizePost } from "./media.ts";
 import { ask, askSecret } from "./prompt.ts";
 
 const HELP = `omawp — sync WordPress posts to local Markdown
@@ -14,9 +15,10 @@ Usage:
   omawp sites                                      List configured sites
   omawp remove <name>                              Remove a site and its stored password
   omawp sync [site...] [--full] [--force]          Pull posts to Markdown (all sites if none given)
-  omawp push <file...> [--dry-run] [-y] [--force] [--flatten]
+  omawp push <file...> [--dry-run] [-y] [--force] [--flatten] [--no-optimize]
                                                    Send edited posts back (shows a diff, asks first)
   omawp flatten <file...>                          Convert a post's raw WordPress HTML to Markdown
+  omawp optimize <file...>                         Convert a post's local featured image to WebP
 
 Options:
   --full      sync: fetch every post instead of only recently modified ones
@@ -24,6 +26,10 @@ Options:
   --dry-run   push: show what would change without sending anything
   -y, --yes   push: don't ask for confirmation
   --flatten   push: allow WordPress blocks (galleries etc.) to be replaced by Markdown
+  --no-optimize  push: upload images as-is instead of converting to WebP
+
+Images are converted to WebP (lossy quality 75, max 2560px) before upload. Override in
+the config with [images] quality = 80 / maxSize = 2048.
 
 Config: ${CONFIG_PATH}
 `;
@@ -127,7 +133,10 @@ function printPlan(plan: PushPlan) {
   }
 }
 
-async function cmdPush(files: string[], flags: { "dry-run"?: boolean; yes?: boolean; force?: boolean; flatten?: boolean }) {
+async function cmdPush(
+  files: string[],
+  flags: { "dry-run"?: boolean; yes?: boolean; force?: boolean; flatten?: boolean; "no-optimize"?: boolean },
+) {
   if (files.length === 0) throw new Error("Usage: omawp push <file...>");
   const config = await loadConfig();
   if (!flags.yes && !flags["dry-run"] && !process.stdin.isTTY) {
@@ -140,6 +149,7 @@ async function cmdPush(files: string[], flags: { "dry-run"?: boolean; yes?: bool
         dryRun: flags["dry-run"],
         force: flags.force,
         flatten: flags.flatten,
+        optimize: !flags["no-optimize"],
         confirm: async (plan) => {
           printPlan(plan);
           return flags.yes || /^y(es)?$/i.test(await ask("\n  Push these changes?", "y/N"));
@@ -168,6 +178,17 @@ async function cmdFlatten(files: string[]) {
   }
 }
 
+async function cmdOptimize(files: string[]) {
+  if (files.length === 0) throw new Error("Usage: omawp optimize <file...>");
+  const config = await loadConfig();
+  for (const file of files) {
+    const r = await optimizePost(siteDir(config, locate(config, file).site), file, imageSettings(config));
+    if (!r) console.log(`${file}: no local featured image to optimize`);
+    else if (!r.frontMatter) console.log(`${file}: ${r.file} ${r.result}`);
+    else console.log(`${file}: ${r.frontMatter.to} (${r.result})\n  featured_image: ${r.frontMatter.from} → ${r.frontMatter.to}`);
+  }
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     args: Bun.argv.slice(2),
@@ -180,6 +201,7 @@ async function main() {
       "dry-run": { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       flatten: { type: "boolean" },
+      "no-optimize": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -202,6 +224,8 @@ async function main() {
       return cmdPush(args, values);
     case "flatten":
       return cmdFlatten(args);
+    case "optimize":
+      return cmdOptimize(args);
     default:
       console.log(HELP);
       if (command && !values.help) process.exitCode = 1;

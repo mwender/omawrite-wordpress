@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { mkdir, chmod } from "node:fs/promises";
 import { parse, stringify } from "smol-toml";
+import { DEFAULT_IMAGE_SETTINGS, type ImageSettings } from "./optimize.ts";
 
 export interface SiteConfig {
   url: string; // site home URL, e.g. https://example.com
@@ -11,7 +12,12 @@ export interface SiteConfig {
 
 export interface Config {
   contentDir: string;
+  images?: Partial<ImageSettings>; // [images] quality / maxSize overrides
   sites: Record<string, SiteConfig>;
+}
+
+export function imageSettings(config: Config): ImageSettings {
+  return { ...DEFAULT_IMAGE_SETTINGS, ...config.images };
 }
 
 const xdgConfig = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -28,6 +34,7 @@ export async function loadConfig(): Promise<Config> {
   const data = parse(await file.text()) as Partial<Config>;
   return {
     contentDir: data.contentDir ?? DEFAULT_CONTENT_DIR,
+    ...(data.images ? { images: data.images } : {}),
     sites: (data.sites ?? {}) as Record<string, SiteConfig>,
   };
 }

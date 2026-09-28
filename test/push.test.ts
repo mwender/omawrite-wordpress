@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { startMockWP, makePost, USER, PASSWORD } from "./mock-wp.ts";
 import { syncSite } from "../src/sync.ts";
 import { pushFile, flattenFile } from "../src/push.ts";
+import { optimizePost } from "../src/media.ts";
+import { DEFAULT_IMAGE_SETTINGS } from "../src/optimize.ts";
+import { photoPng } from "./images.ts";
 import { parse } from "../src/frontmatter.ts";
 import type { Config } from "../src/config.ts";
 import type { WPPost } from "../src/wp.ts";
@@ -135,34 +138,57 @@ test("flatten command converts raw blocks to Markdown", async () => {
 // ---------------------------------------------------------------------------
 
 const POST1 = "posts/2026/2026-01-01_post-1.md";
-const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(2000).fill(7)]);
 const setFront = (rel: string, lines: string) => edit(rel, (s) => s.replace(/^title: .*$/m, (t) => `${t}\n${lines}`));
+let PNG: Buffer;
+const exists = (rel: string) => Bun.file(path(rel)).exists();
 
-test("uploads a local image from posts/img as the featured image, with alt text", async () => {
+test("converts a local image to WebP, uploads it as the featured image, and sets alt text", async () => {
+  PNG = await photoPng();
   await Bun.write(path("posts/img/hero.png"), PNG);
   await setFront(POST1, "featured_image: img/hero.png\nfeatured_image_alt: My Mac Mini");
 
   const dry = await pushFile(config, path(POST1), { dryRun: true });
-  expect(dry.plan!.changes).toEqual([
-    { field: "featured_image", from: "(none)", to: "upload hero.png (2 KB)" },
-    { field: "featured_image_alt", from: "", to: "My Mac Mini" },
-  ]);
+  expect(dry.plan!.changes[0]!.to).toMatch(/^upload hero\.webp \(\d+ KB; from hero\.png, \d+ KB → \d+ KB, 600×400 lossy q75\)$/);
+  expect(dry.plan!.changes[1]).toEqual({ field: "featured_image_alt", from: "", to: "My Mac Mini" });
   expect(mock.uploads).toEqual([]);
+  expect(await exists("posts/img/hero.webp")).toBe(false); // dry run writes nothing
 
   await pushFile(config, path(POST1), yes);
-  expect(mock.uploads).toEqual([{ filename: "hero.png", type: "image/png", size: PNG.length }]);
+  const webp = new Uint8Array(await Bun.file(path("posts/img/hero.webp")).arrayBuffer());
+  expect(mock.uploads).toEqual([{ filename: "hero.webp", type: "image/webp", size: webp.length }]);
+  expect(webp.length).toBeLessThan(PNG.length);
   expect(mock.updates).toEqual([{ id: 1, fields: { featured_media: 501 } }]);
   expect(mock.media.get(501)!.alt_text).toBe("My Mac Mini");
 
   // The file now shows what WordPress has, and there's nothing left to push.
   const { fm } = parse(await Bun.file(path(POST1)).text());
-  expect(fm.featured_image).toBe("https://example.test/uploads/2026/09/hero.png");
+  expect(fm.featured_image).toBe("https://example.test/uploads/2026/09/hero.webp");
   expect(fm.featured_image_alt).toBe("My Mac Mini");
   expect((await pushFile(config, path(POST1), yes)).status).toBe("no-changes");
 });
 
-test("never uploads the same file twice", async () => {
-  await Bun.write(path("posts/img/hero.png"), PNG);
+test("--no-optimize uploads the original file", async () => {
+  await Bun.write(path("posts/img/hero.png"), await photoPng());
+  await setFront(POST1, "featured_image: img/hero.png");
+  const r = await pushFile(config, path(POST1), { ...yes, optimize: false });
+  expect(r.plan!.changes[0]!.to).toMatch(/^upload hero\.png \(\d+ KB; not optimized\)$/);
+  expect(mock.uploads[0]).toMatchObject({ filename: "hero.png", type: "image/png" });
+});
+
+test("an earlier as-is upload doesn't stop the optimized version being uploaded", async () => {
+  await Bun.write(path("posts/img/hero.png"), await photoPng());
+  await setFront(POST1, "featured_image: img/hero.png");
+  await pushFile(config, path(POST1), { ...yes, optimize: false });
+
+  await edit(POST1, (s) => s.replace(/^featured_image: .*$/m, "featured_image: img/hero.png"));
+  const r = await pushFile(config, path(POST1), yes);
+  expect(r.plan!.changes[0]!.to).toMatch(/^upload hero\.webp /);
+  expect(mock.uploads.map((u) => u.filename)).toEqual(["hero.png", "hero.webp"]);
+  expect(mock.updates.at(-1)).toEqual({ id: 1, fields: { featured_media: 502 } });
+});
+
+test("never optimizes or uploads the same file twice", async () => {
+  await Bun.write(path("posts/img/hero.png"), await photoPng());
   await setFront(POST1, "featured_image: img/hero.png");
   await pushFile(config, path(POST1), yes);
 
@@ -170,10 +196,38 @@ test("never uploads the same file twice", async () => {
   await setFront(rel, "featured_image: ../../posts/img/hero.png"); // relative to the post file works too
   const r = await pushFile(config, path(rel), yes);
   expect(r.plan!.changes).toEqual([
-    { field: "featured_image", from: "(none)", to: "https://example.test/uploads/2026/09/hero.png (already uploaded)" },
+    { field: "featured_image", from: "(none)", to: "https://example.test/uploads/2026/09/hero.webp (already uploaded)" },
   ]);
   expect(mock.uploads.length).toBe(1);
   expect(mock.updates.at(-1)).toEqual({ id: 3, fields: { featured_media: 501 } });
+});
+
+test("optimize command writes the WebP and points front matter at it", async () => {
+  await Bun.write(path("posts/img/hero.png"), await photoPng());
+  await setFront(POST1, "featured_image: img/hero.png");
+  const before = await Bun.file(path(POST1)).text();
+
+  const r = await optimizePost(join(dir, "test"), path(POST1), DEFAULT_IMAGE_SETTINGS);
+  expect(r!.frontMatter).toEqual({ from: "img/hero.png", to: "img/hero.webp" });
+  expect(await exists("posts/img/hero.webp")).toBe(true);
+  expect(await exists("posts/img/hero.png")).toBe(true); // original kept
+  // Only the featured_image line changed.
+  expect(await Bun.file(path(POST1)).text()).toBe(before.replace("featured_image: img/hero.png", "featured_image: img/hero.webp"));
+
+  // Running it again finds nothing more to do; pushing uploads the WebP as-is.
+  expect((await optimizePost(join(dir, "test"), path(POST1), DEFAULT_IMAGE_SETTINGS))!.result).toBe("left as is: already WebP");
+  const push = await pushFile(config, path(POST1), yes);
+  expect(push.plan!.changes[0]!.to).toMatch(/^upload hero\.webp \(\d+ KB; already WebP\)$/);
+  expect(mock.uploads[0]).toMatchObject({ filename: "hero.webp", type: "image/webp" });
+});
+
+test("a different existing WebP with the same name isn't overwritten", async () => {
+  await Bun.write(path("posts/img/hero.png"), await photoPng());
+  await Bun.write(path("posts/img/hero.webp"), "someone else's file");
+  await setFront(POST1, "featured_image: img/hero.png");
+  const r = await optimizePost(join(dir, "test"), path(POST1), DEFAULT_IMAGE_SETTINGS);
+  expect(r!.frontMatter!.to).toMatch(/^img\/hero-[0-9a-f]{8}\.webp$/);
+  expect(await Bun.file(path("posts/img/hero.webp")).text()).toBe("someone else's file");
 });
 
 test("uses existing media by URL (any size variant) or ID, and removes with none", async () => {

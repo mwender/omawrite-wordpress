@@ -1,7 +1,7 @@
 import { join, relative, resolve, sep, dirname } from "node:path";
 import { mkdir, unlink, rmdir } from "node:fs/promises";
 import { createTwoFilesPatch } from "diff";
-import { type Config, expandHome } from "./config.ts";
+import { type Config, expandHome, imageSettings } from "./config.ts";
 import { openSite, fetchLookups, renderPost, writePost, postPath, hash, type Site } from "./sync.ts";
 import { parse, serialize } from "./frontmatter.ts";
 import { htmlToMarkdown, markdownToHtml, rawBlockNames } from "./convert.ts";
@@ -13,6 +13,7 @@ export interface PushOptions {
   dryRun?: boolean;
   force?: boolean; // push even if the post changed on WordPress since the last sync
   flatten?: boolean; // accept losing raw blocks; keep this post Markdown-only from now on
+  optimize?: boolean; // convert uploaded images to WebP (default true)
   confirm?: (plan: PushPlan) => Promise<boolean>;
 }
 
@@ -131,7 +132,10 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
     payload.tags = tgs.ids;
   }
 
-  const featured = await planFeaturedImage(site, fm, remote, join(site.root, rel));
+  const featured = await planFeaturedImage(site, fm, remote, join(site.root, rel), {
+    optimize: opts.optimize,
+    settings: imageSettings(config),
+  });
   changes.push(...featured.changes);
 
   const remoteContent = remote.content.raw ?? "";

@@ -71,6 +71,19 @@ flatten: true              # only if you've chosen Markdown-only for this post (
 | `none` | Removes the featured image |
 | (line absent) | Leaves it alone |
 
+Local images are converted to WebP before upload (lossy quality 75, longest side capped at
+2560px, rotated upright, metadata including GPS stripped; flat graphics/screenshots may stay
+lossless). The WebP is saved next to the original. Images that are already WebP/AVIF, animated
+GIFs, and images WebP can't shrink are uploaded as-is. `omawp optimize <post>` does the
+conversion ahead of time and points `featured_image` at the `.webp`; `push --no-optimize`
+skips it. Output is deterministic (sharp is pinned). Override defaults in the config:
+
+```toml
+[images]
+quality = 80
+maxSize = 2048
+```
+
 `featured_image_alt` sets the image's alt text. Uploads happen only after you confirm,
 and a file is never uploaded twice (omawp remembers uploads by content). After the push
 the line shows the image's WordPress URL. Supported: jpg, png, gif, webp, avif.

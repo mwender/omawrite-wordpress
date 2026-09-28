@@ -12,6 +12,7 @@
   "dependencies": {
     "diff": "^9.0.0",
     "marked": "^18.0.14",
+    "sharp": "0.35.5",
     "smol-toml": "^1.9.0",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2",

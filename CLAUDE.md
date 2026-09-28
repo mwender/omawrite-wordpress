@@ -11,6 +11,7 @@ run commands with `mise exec -- bun …` if Bun isn't on PATH.
 - `src/blocks.ts` — Gutenberg block delimiter parser (top-level segments)
 - `src/push.ts` — push (conflict check, raw-block safety check, diff/confirm) and `flatten`
 - `src/media.ts` — featured image resolution/upload for push (planned first, applied after confirm)
+- `src/optimize.ts` — deterministic WebP optimization (sharp pinned exactly; bumping it changes output)
 - `src/frontmatter.ts`, `src/config.ts`, `src/secrets.ts` (libsecret via `secret-tool`), `src/prompt.ts`
 - `test/` — `bun test`; `test/mock-wp.ts` is a fake WP REST server
 
