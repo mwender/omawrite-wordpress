@@ -111,7 +111,7 @@ test("full sync reports posts deleted on the remote", async () => {
 
 test("rejects bad credentials", async () => {
   process.env.OMAWP_APP_PASSWORD_TEST = "wrong";
-  expect(syncSite(config, "test")).rejects.toThrow("401");
+  await expect(syncSite(config, "test")).rejects.toThrow("401");
 });
 
 test("migrates files from the old naming layout, keeping local edits", async () => {

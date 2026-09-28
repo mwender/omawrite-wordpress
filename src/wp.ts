@@ -27,6 +27,14 @@ export interface WPTerm {
 export interface WPMedia {
   id: number;
   source_url: string;
+  alt_text?: string;
+}
+
+// A file body for upload (sent as-is instead of JSON).
+export interface Upload {
+  bytes: Uint8Array;
+  filename: string;
+  mime: string;
 }
 
 // Term names come back HTML-encoded ("Tips &amp; Tricks").
@@ -74,14 +82,23 @@ export class WPClient {
     params: Record<string, string | number> = {},
     body?: unknown,
   ): Promise<{ data: T; res: Response }> {
+    const upload = body as Upload | undefined;
+    const isUpload = upload?.bytes instanceof Uint8Array;
     const res = await fetch(this.url(route, params), {
       method: body === undefined ? "GET" : "POST",
       headers: {
         Authorization: this.auth,
         Accept: "application/json",
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(body === undefined
+          ? {}
+          : isUpload
+            ? {
+                "Content-Type": upload!.mime,
+                "Content-Disposition": `attachment; filename="${upload!.filename.replace(/["\\\r\n]/g, "_")}"`,
+              }
+            : { "Content-Type": "application/json" }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isUpload ? upload!.bytes : JSON.stringify(body),
     });
     if (!res.ok) {
       let msg = `${res.status} ${res.statusText}`;
@@ -137,9 +154,22 @@ export class WPClient {
     const out: WPMedia[] = [];
     for (let i = 0; i < ids.length; i += 100) {
       const chunk = ids.slice(i, i + 100);
-      out.push(...(await this.paginate<WPMedia>("wp/v2/media", { include: chunk.join(","), _fields: "id,source_url" })));
+      out.push(...(await this.paginate<WPMedia>("wp/v2/media", { include: chunk.join(","), _fields: "id,source_url,alt_text" })));
     }
     return out;
+  }
+
+  // Media items whose title/filename match `search` (used to find a URL's attachment).
+  searchMedia(search: string) {
+    return this.request<WPMedia[]>("wp/v2/media", { search, per_page: 100, _fields: "id,source_url,alt_text" }).then((r) => r.data);
+  }
+
+  uploadMedia(file: Upload) {
+    return this.request<WPMedia>("wp/v2/media", {}, file).then((r) => r.data);
+  }
+
+  updateMedia(id: number, fields: Record<string, unknown>) {
+    return this.request<WPMedia>(`wp/v2/media/${id}`, {}, fields).then((r) => r.data);
   }
 }
 

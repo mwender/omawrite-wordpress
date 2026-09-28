@@ -40,6 +40,11 @@ export function startMockWP(posts: WPPost[]) {
   const categories = [{ id: 1, name: "News", slug: "news" }, { id: 2, name: "Tips &amp; Tricks", slug: "tips" }];
   const tags = [{ id: 5, name: "bun", slug: "bun" }];
   const updates: { id: number; fields: Record<string, any> }[] = [];
+  const media = new Map<number, { id: number; source_url: string; alt_text: string }>([
+    [42, { id: 42, source_url: "https://example.test/uploads/42.jpg", alt_text: "" }],
+    [43, { id: 43, source_url: "https://example.test/uploads/2026/09/hero.webp", alt_text: "A hero" }],
+  ]);
+  const uploads: { filename: string; type: string; size: number }[] = [];
 
   const server = Bun.serve({
     port: 0,
@@ -69,6 +74,21 @@ export function startMockWP(posts: WPPost[]) {
         }
         return Response.json(post);
       }
+      if (req.method === "POST" && route === "wp/v2/media") {
+        const filename = req.headers.get("Content-Disposition")!.match(/filename="([^"]+)"/)![1]!;
+        const size = (await req.arrayBuffer()).byteLength;
+        uploads.push({ filename, type: req.headers.get("Content-Type")!, size });
+        const item = { id: 500 + uploads.length, source_url: `https://example.test/uploads/2026/09/${filename}`, alt_text: "" };
+        media.set(item.id, item);
+        return Response.json(item, { status: 201 });
+      }
+      const mediaItem = route.match(/^wp\/v2\/media\/(\d+)$/);
+      if (mediaItem && req.method === "POST") {
+        const item = media.get(Number(mediaItem[1]));
+        if (!item) return Response.json({ code: "rest_post_invalid_id" }, { status: 404 });
+        Object.assign(item, await req.json());
+        return Response.json(item);
+      }
       if (req.method === "POST" && (route === "wp/v2/categories" || route === "wp/v2/tags")) {
         const list = route.endsWith("categories") ? categories : tags;
         const { name } = (await req.json()) as { name: string };
@@ -88,13 +108,15 @@ export function startMockWP(posts: WPPost[]) {
         case "wp/v2/tags":
           return paged(tags, url);
         case "wp/v2/media": {
+          const search = url.searchParams.get("search");
+          if (search) return paged([...media.values()].filter((m) => m.source_url.includes(search)), url);
           const ids = (url.searchParams.get("include") ?? "").split(",").map(Number);
-          return paged(ids.map((id) => ({ id, source_url: `https://example.test/uploads/${id}.jpg` })), url);
+          return paged(ids.flatMap((id) => media.get(id) ?? []), url);
         }
       }
       return Response.json({ code: "rest_no_route" }, { status: 404 });
     },
   });
 
-  return { server, requests, updates, url: `http://localhost:${server.port}`, api: `http://localhost:${server.port}/wp-json/` };
+  return { server, requests, updates, media, uploads, url: `http://localhost:${server.port}`, api: `http://localhost:${server.port}/wp-json/` };
 }

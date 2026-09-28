@@ -2,7 +2,7 @@ import { join, dirname } from "node:path";
 import { mkdir, rename, rmdir } from "node:fs/promises";
 import { type Config, siteDir } from "./config.ts";
 import { getPassword } from "./secrets.ts";
-import { WPClient, type WPPost, type WPTerm } from "./wp.ts";
+import { WPClient, type WPPost, type WPTerm, type WPMedia } from "./wp.ts";
 import { htmlToMarkdown, CONVERTER } from "./convert.ts";
 import { serialize, parse, type FrontMatter } from "./frontmatter.ts";
 
@@ -17,6 +17,7 @@ export interface SiteState {
   converter?: number; // HTML → Markdown converter version (see CONVERTER)
   lastModified?: string; // newest post `modified` (site-local time) seen
   posts: Record<string, PostState>;
+  uploads?: Record<string, { id: number; url: string }>; // sha1 of a local file → media item
 }
 
 export interface SyncOptions {
@@ -34,7 +35,7 @@ export interface SyncResult {
   missingRemote: string[];
 }
 
-export function hash(text: string): string {
+export function hash(text: string | Uint8Array): string {
   return new Bun.CryptoHasher("sha1").update(text).digest("hex");
 }
 
@@ -95,7 +96,7 @@ export async function openSite(config: Config, name: string): Promise<Site> {
 export interface Lookups {
   categories: Map<number, string>;
   tags: Map<number, string>;
-  media: Map<number, string>;
+  media: Map<number, WPMedia>;
 }
 
 export async function fetchLookups(client: WPClient, posts: WPPost[], terms?: { categories: WPTerm[]; tags: WPTerm[] }): Promise<Lookups> {
@@ -104,7 +105,7 @@ export async function fetchLookups(client: WPClient, posts: WPPost[], terms?: { 
   return {
     categories: new Map(categories.map((t) => [t.id, t.name])),
     tags: new Map(tags.map((t) => [t.id, t.name])),
-    media: new Map((await client.media(mediaIds)).map((m) => [m.id, m.source_url])),
+    media: new Map((await client.media(mediaIds)).map((m) => [m.id, m])),
   };
 }
 
@@ -121,7 +122,8 @@ export function renderPost(post: WPPost, lookups: Lookups, flatten = false): str
     categories: (post.categories ?? []).map((c) => lookups.categories.get(c) ?? String(c)),
     tags: (post.tags ?? []).map((t) => lookups.tags.get(t) ?? String(t)),
     excerpt: (post.excerpt.raw ?? "").trim(),
-    featured_image: lookups.media.get(post.featured_media),
+    featured_image: lookups.media.get(post.featured_media)?.source_url,
+    featured_image_alt: lookups.media.get(post.featured_media)?.alt_text || undefined,
     sticky: post.sticky || undefined,
     flatten: flatten || undefined,
   };

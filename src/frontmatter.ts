@@ -11,9 +11,10 @@ export interface FrontMatter {
   categories?: string[];
   tags?: string[];
   excerpt?: string;
-  featured_image?: string;
+  featured_image?: string | number; // URL (as pulled), local path, media ID, or "none"
+  featured_image_alt?: string;
   sticky?: boolean;
-  complex_blocks?: string[];
+  flatten?: boolean;
   [key: string]: unknown;
 }
 

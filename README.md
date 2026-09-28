@@ -54,9 +54,26 @@ categories: [News]
 tags: [bun, wordpress]
 excerpt: Short summary
 featured_image: https://example.com/wp-content/uploads/hero.jpg
+featured_image_alt: A short description
 flatten: true              # only if you've chosen Markdown-only for this post (see below)
 ---
 ```
+
+## Featured images
+
+`featured_image` accepts:
+
+| Value | Push does |
+|---|---|
+| `img/hero.png` | Uploads the file to the Media Library and sets it. Paths are tried relative to the site's `posts/` folder, then to the post file; `~/…` and absolute paths work too. |
+| a Media Library URL (any size variant) | Sets that existing image |
+| a media ID, e.g. `5428` | Sets that existing image |
+| `none` | Removes the featured image |
+| (line absent) | Leaves it alone |
+
+`featured_image_alt` sets the image's alt text. Uploads happen only after you confirm,
+and a file is never uploaded twice (omawp remembers uploads by content). After the push
+the line shows the image's WordPress URL. Supported: jpg, png, gif, webp, avif.
 
 ## WordPress blocks and raw HTML
 
@@ -95,4 +112,4 @@ Classic-editor posts are pushed back in classic format (no block markup is added
 2. ~~`push` with conflict detection~~
 3. `status`, `diff`, `new`
 4. OpenTUI browser
-5. Media uploads / featured images from local files
+5. ~~Featured images from local files~~; inline images (`![](img/x.png)` uploaded on push)

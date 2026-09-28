@@ -4,8 +4,9 @@ import { gfm } from "turndown-plugin-gfm";
 import { Lexer, Parser, type Token, type Tokens } from "marked";
 import { parseBlocks, hasBlocks, maskFences, type Segment } from "./blocks.ts";
 
-// Bump when pull output changes; sync then rewrites every file you haven't edited.
-export const CONVERTER = 3;
+// Bump when pull output (body or front matter) changes; sync then rewrites every
+// file you haven't edited.
+export const CONVERTER = 4;
 
 // ---------------------------------------------------------------------------
 // HTML → Markdown (pull)

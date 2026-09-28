@@ -79,7 +79,7 @@ test("refuses to overwrite changes made on WordPress unless forced", async () =>
   const rel = "posts/2026/2026-01-01_post-1.md";
   await edit(rel, (s) => s.replace("Hello", "Howdy"));
   posts[0]!.modified_gmt = "2026-08-01T00:00:00";
-  expect(pushFile(config, path(rel), yes)).rejects.toThrow("changed on WordPress");
+  await expect(pushFile(config, path(rel), yes)).rejects.toThrow("changed on WordPress");
   expect(mock.updates).toEqual([]);
   expect((await pushFile(config, path(rel), { ...yes, force: true })).status).toBe("pushed");
 });
@@ -95,7 +95,7 @@ test("raw blocks pass through untouched", async () => {
 test("refuses to drop a raw block unless --flatten, which then sticks", async () => {
   const rel = "posts/2026/2026-01-01_post-3.md";
   await edit(rel, (s) => s.replace(columns, "Col"));
-  expect(pushFile(config, path(rel), yes)).rejects.toThrow("missing from posts/2026/2026-01-01_post-3.md");
+  await expect(pushFile(config, path(rel), yes)).rejects.toThrow("missing from posts/2026/2026-01-01_post-3.md");
   expect(mock.updates).toEqual([]);
 
   expect((await pushFile(config, path(rel), { ...yes, flatten: true })).status).toBe("pushed");
@@ -128,4 +128,93 @@ test("flatten command converts raw blocks to Markdown", async () => {
   const { fm, body } = parse(await Bun.file(path(rel)).text());
   expect(fm.flatten).toBe(true);
   expect(body).toBe("Intro.\n\nCol\n");
+});
+
+// ---------------------------------------------------------------------------
+// Featured images
+// ---------------------------------------------------------------------------
+
+const POST1 = "posts/2026/2026-01-01_post-1.md";
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(2000).fill(7)]);
+const setFront = (rel: string, lines: string) => edit(rel, (s) => s.replace(/^title: .*$/m, (t) => `${t}\n${lines}`));
+
+test("uploads a local image from posts/img as the featured image, with alt text", async () => {
+  await Bun.write(path("posts/img/hero.png"), PNG);
+  await setFront(POST1, "featured_image: img/hero.png\nfeatured_image_alt: My Mac Mini");
+
+  const dry = await pushFile(config, path(POST1), { dryRun: true });
+  expect(dry.plan!.changes).toEqual([
+    { field: "featured_image", from: "(none)", to: "upload hero.png (2 KB)" },
+    { field: "featured_image_alt", from: "", to: "My Mac Mini" },
+  ]);
+  expect(mock.uploads).toEqual([]);
+
+  await pushFile(config, path(POST1), yes);
+  expect(mock.uploads).toEqual([{ filename: "hero.png", type: "image/png", size: PNG.length }]);
+  expect(mock.updates).toEqual([{ id: 1, fields: { featured_media: 501 } }]);
+  expect(mock.media.get(501)!.alt_text).toBe("My Mac Mini");
+
+  // The file now shows what WordPress has, and there's nothing left to push.
+  const { fm } = parse(await Bun.file(path(POST1)).text());
+  expect(fm.featured_image).toBe("https://example.test/uploads/2026/09/hero.png");
+  expect(fm.featured_image_alt).toBe("My Mac Mini");
+  expect((await pushFile(config, path(POST1), yes)).status).toBe("no-changes");
+});
+
+test("never uploads the same file twice", async () => {
+  await Bun.write(path("posts/img/hero.png"), PNG);
+  await setFront(POST1, "featured_image: img/hero.png");
+  await pushFile(config, path(POST1), yes);
+
+  const rel = "posts/2026/2026-01-01_post-3.md";
+  await setFront(rel, "featured_image: ../../posts/img/hero.png"); // relative to the post file works too
+  const r = await pushFile(config, path(rel), yes);
+  expect(r.plan!.changes).toEqual([
+    { field: "featured_image", from: "(none)", to: "https://example.test/uploads/2026/09/hero.png (already uploaded)" },
+  ]);
+  expect(mock.uploads.length).toBe(1);
+  expect(mock.updates.at(-1)).toEqual({ id: 3, fields: { featured_media: 501 } });
+});
+
+test("uses existing media by URL (any size variant) or ID, and removes with none", async () => {
+  await setFront(POST1, "featured_image: https://example.test/uploads/2026/09/hero-1024x768.webp");
+  await pushFile(config, path(POST1), yes);
+  expect(mock.updates.at(-1)).toEqual({ id: 1, fields: { featured_media: 43 } });
+  expect(parse(await Bun.file(path(POST1)).text()).fm.featured_image_alt).toBe("A hero");
+
+  await edit(POST1, (s) => s.replace(/^featured_image: .*$/m, "featured_image: 42"));
+  await pushFile(config, path(POST1), yes);
+  expect(mock.updates.at(-1)).toEqual({ id: 1, fields: { featured_media: 42 } });
+
+  await edit(POST1, (s) => s.replace(/^featured_image: .*$/m, "featured_image: none"));
+  await pushFile(config, path(POST1), yes);
+  expect(mock.updates.at(-1)).toEqual({ id: 1, fields: { featured_media: 0 } });
+  expect(parse(await Bun.file(path(POST1)).text()).fm.featured_image).toBeUndefined();
+  expect(mock.uploads).toEqual([]);
+});
+
+test("changing only the alt text updates the media item, not the post", async () => {
+  await setFront(POST1, "featured_image: 43");
+  await pushFile(config, path(POST1), yes);
+  const sent = mock.updates.length;
+
+  await edit(POST1, (s) => s.replace("featured_image_alt: A hero", "featured_image_alt: A better description"));
+  const r = await pushFile(config, path(POST1), yes);
+  expect(r.plan!.changes).toEqual([{ field: "featured_image_alt", from: "A hero", to: "A better description" }]);
+  expect(mock.updates.length).toBe(sent);
+  expect(mock.media.get(43)!.alt_text).toBe("A better description");
+});
+
+test("explains featured image problems before sending anything", async () => {
+  await setFront(POST1, "featured_image: img/missing.png");
+  await expect(pushFile(config, path(POST1), yes)).rejects.toThrow("can't find img/missing.png");
+
+  await Bun.write(path("posts/img/notes.txt"), "hi");
+  await edit(POST1, (s) => s.replace("img/missing.png", "img/notes.txt"));
+  await expect(pushFile(config, path(POST1), yes)).rejects.toThrow("isn't a supported image type");
+
+  await edit(POST1, (s) => s.replace("img/notes.txt", "https://elsewhere.test/pic.jpg"));
+  await expect(pushFile(config, path(POST1), yes)).rejects.toThrow("isn't in the Media Library");
+  expect(mock.uploads).toEqual([]);
+  expect(mock.updates).toEqual([]);
 });

@@ -6,6 +6,7 @@ import { openSite, fetchLookups, renderPost, writePost, postPath, hash, type Sit
 import { parse, serialize } from "./frontmatter.ts";
 import { htmlToMarkdown, markdownToHtml, rawBlockNames } from "./convert.ts";
 import { hasBlocks } from "./blocks.ts";
+import { planFeaturedImage } from "./media.ts";
 import type { WPPost, WPTerm } from "./wp.ts";
 
 export interface PushOptions {
@@ -130,6 +131,9 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
     payload.tags = tgs.ids;
   }
 
+  const featured = await planFeaturedImage(site, fm, remote, join(site.root, rel));
+  changes.push(...featured.changes);
+
   const remoteContent = remote.content.raw ?? "";
   let contentDiff: string | null = null;
   if (content.trim() !== remoteContent.trim()) {
@@ -150,7 +154,11 @@ export async function pushFile(config: Config, path: string, opts: PushOptions =
     (payload[t.taxonomy] as number[]).push(term.id);
   }
 
-  const updated = await site.client.updatePost(id, payload);
+  const featuredMedia = await featured.apply();
+  if (featuredMedia !== undefined) payload.featured_media = featuredMedia;
+
+  // Only alt text changed? That lives on the media item; nothing to send for the post.
+  const updated = Object.keys(payload).length ? await site.client.updatePost(id, payload) : await site.client.post(id);
   const file = await refreshLocal(site, updated, rel, flatten);
   await site.save();
   return { status: "pushed", plan, file };
